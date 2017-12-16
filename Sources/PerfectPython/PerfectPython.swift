@@ -113,7 +113,7 @@ extension UnsafeMutablePointer where Pointee == FILE {
 public struct PythonBridgableDictionary<Key: Hashable & Pythonable, Value: Pythonable> {
     public var dictionary: [Key: Value]
 
-    init(dictionary: [Key: Value]) {
+    public init(dictionary: [Key: Value]) {
         self.dictionary = dictionary
     }
 }
@@ -159,7 +159,7 @@ extension PythonBridgableDictionary: Pythonable {
 }
 
 public extension Dictionary where Key: Pythonable, Value: Pythonable {
-    var python: PythonBridgableDictionary<Key, Value> {
+    public var python: PythonBridgableDictionary<Key, Value> {
         return PythonBridgableDictionary(dictionary: self)
     }
 }
@@ -167,7 +167,7 @@ public extension Dictionary where Key: Pythonable, Value: Pythonable {
 public struct PythonBridgableArray<Element: Pythonable> {
     public var array: [Element]
 
-    init(array: [Element]) {
+    public init(array: [Element]) {
         self.array = array
     }
 }
@@ -195,13 +195,13 @@ extension PythonBridgableArray: Pythonable {
 }
 
 extension Array where Element: Pythonable {
-    var python: PythonBridgableArray<Element> {
+    public var python: PythonBridgableArray<Element> {
         return PythonBridgableArray(array: self)
     }
 }
 
 extension Array where Element == Pythonable {
-    func pythonTuple() throws -> PyObj {
+    public func pythonTuple() throws -> PyObj {
         guard self.count > 0,
             let args = PyTuple_New(self.count) else {
                 throw PyObj.Exception.NullArray
@@ -218,10 +218,11 @@ extension Array where Element == Pythonable {
 }
 
 public struct PythonBridgeableFILE {
-    let file: Int32
-    let path: String
-    let mode: String
-    init(file: Int32, path: String, mode: String) {
+    public let file: Int32
+    public let path: String
+    public let mode: String
+
+    public init(file: Int32, path: String, mode: String) {
         self.file = file
         self.path = path
         self.mode = mode
