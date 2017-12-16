@@ -29,9 +29,11 @@ let package = Package(
             name: "PerfectPython",
             targets: ["PerfectPython"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/kzaher/CPython3.git", from: "1.0.0"),
+    ],
     targets: [
-      .target(name: "PythonAPI", dependencies: []),
-      .target(name: "PerfectPython", dependencies: ["PythonAPI"]),
+      .target(name: "PerfectPython", dependencies: ["Python3"]),
       .testTarget(name: "PerfectPythonTests", dependencies: ["PerfectPython"])
     ]
 )
