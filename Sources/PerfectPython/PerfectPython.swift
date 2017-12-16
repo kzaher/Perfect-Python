@@ -18,6 +18,7 @@
 //
 
 import Python3
+import struct Foundation.Decimal
 
 extension String {
     var wchars: [wchar_t] {
@@ -92,22 +93,17 @@ extension Double: Pythonable {
     }
 }
 
-//extension Decimal: Pythonable {
-//    /// convert Double to PyObj
-//    public func python() throws -> PyObj {
-//        if let ref = PyFloat_FromDouble(self) {
-//            return PyObj(ref)
-//        }
-//        else {
-//            throw PyObj.Exception.InvalidType
-//        }
-//    }
-//    /// convert PyObj to Double
-//    public init(python: PyObj) throws {
-//        self = PyFloat_AsDouble(python.ref)
-//    }
-//}
-//
+extension Decimal: Pythonable {
+    /// convert Double to PyObj
+    public func python() throws -> PyObj {
+        return try Python.System._decimal.construct(try self.description.python()).unwrapOrThrow()
+    }
+    /// convert PyObj to Double
+    public init(python: PyObj) throws {
+        self = try Decimal(string: try python.call(String.self, "__str__").unwrapOrThrow()).unwrapOrThrow()
+    }
+}
+
 extension UnsafeMutablePointer where Pointee == FILE {
     public func python() throws -> PyObj {
         return try PythonBridgeableFILE(file: fileno(self), path: "", mode: "rw").python()
@@ -129,8 +125,11 @@ extension PythonBridgableDictionary: Pythonable {
         if let keys = PyDict_Keys(python.ref) {
             for i in 0 ..< PyDict_Size(python.ref) {
                 if let key = PyList_GetItem(keys, i),
-                    let j = PyDict_GetItem(python.ref, key) {
-                    dict[try Key(python: PyObj(key))] = try Value(python: PyObj(j))
+                    let value = PyDict_GetItem(python.ref, key) {
+                    Py_IncRef(key)
+                    Py_IncRef(value)
+
+                    dict[try Key(python: PyObj(key))] = try Value(python: PyObj(value))
                 }
             }
             defer {
@@ -177,6 +176,7 @@ extension PythonBridgableArray: Pythonable {
     public init(python : PyObj) throws {
         self.array = try (0 ..< PyList_Size(python.ref)).flatMap { i -> [Element] in
             if let element = PyList_GetItem(python.ref, i) {
+                Py_IncRef(element)
                 return [try Element(python: PyObj(element))]
             }
             return []
@@ -250,7 +250,7 @@ extension PythonBridgeableFILE: Pythonable {
 final public class PyObj {
 
     /// reference pointer
-    let ref: UnsafeMutablePointer<PyObject>
+    public let ref: UnsafeMutablePointer<PyObject>
 
     /// Errors
     public enum Exception: Error {
@@ -277,15 +277,18 @@ final public class PyObj {
     ///   - import: String, the module name without path and suffix
     /// - throws: `Exception.ImportFailure`
     public init(path: String? = nil, `import`: String) throws {
-        if let p = path {
-            PySys_SetPath(p.wchars)
+        ref = try Python.inWorkingDirectory(path: path) {
+                if let reference = PyImport_ImportModule(`import`) {
+                    return reference
+                } else {
+                    throw Exception.Throw(Python.LastError)
+                }
         }
+    }
 
-        if let reference = PyImport_ImportModule(`import`) {
-            ref = reference
-        } else {
-            throw Exception.Throw(Python.LastError)
-        }
+    public init(systemPath: String) throws {
+        self.ref = PySys_GetObject(systemPath)
+        Py_IncRef(ref)
     }
 
     /// Initialize a PyObj by its reference pointer
@@ -372,6 +375,25 @@ final public class PyObj {
         return try self.load(PyObj.self, variableName)
     }
 
+    var moduleDictionary: PyObj {
+        return PyObj(PyModule_GetDict(ref))
+    }
+
+    subscript(mappingIndex: String) -> PyObj? {
+        get {
+            if let obj = PyMapping_GetItemString(ref, mappingIndex) {
+                return PyObj(obj)
+            } else {
+                return nil
+            }
+        }
+        set {
+            guard PyMapping_SetItemString(ref, mappingIndex, newValue?.ref) == 0 else {
+                fatalError("Mapping not set")
+            }
+        }
+    }
+
     /// save a variable with a new value and by its name
     /// - parameters:
     ///   - variableName: String, name of the variable to save
@@ -389,7 +411,7 @@ final public class PyObj {
 
     /// get version info
     public static var Version: String? {
-        return Python.System?._version
+        return Python.System._version
     }
 
     public func `as`<T: Pythonable>(_ type: T.Type = T.self) -> T? {
@@ -410,108 +432,103 @@ extension PyObj: Pythonable {
     }
 }
 
+extension PyObj: CustomStringConvertible {
+    public var description: String {
+        return (try? self.call(String.self, "__str__")).flatMap { $0 } ?? "Error converting to Swift"
+    }
+}
+
 public class Python {
+
+    public static func inWorkingDirectory<T>(path: String?, action: () throws -> T) rethrows -> T {
+
+        if let path = path {
+            let previousPaths = try! PyObj(systemPath: "path")
+
+            let adjustedPaths = try! Python.System._deepCopy.call(PyObj.self, "deepcopy", previousPaths).unwrapOrThrow()
+
+            _ = try! adjustedPaths.call(PyObj.self, "append", path)
+
+            defer {
+                PySys_SetObject("path", previousPaths.ref)
+            }
+
+            PySys_SetObject("path", adjustedPaths.ref)
+            return try action()
+        }
+        else {
+            return try action()
+        }
+    }
 
     static var _syslib: Python? = nil
 
-    public static var System: Python? {
-        if let sys = _syslib {
-            return sys
-        } else {
-            _syslib = Python()
-            return _syslib
-        }
-    }
+    public static let System: Python = Python()
 
-    let _module: UnsafeMutablePointer<PyObject>
-    let _sys: UnsafeMutablePointer<PyObject>
     let _version: String
+    let _sys: PyObj
+    let _decimal: PyObj
+    let _deepCopy: PyObj
 
     public static var LastError: String {
-        var ptype: UnsafeMutablePointer<PyObject>? = nil
-        var pvalue: UnsafeMutablePointer<PyObject>? = nil
-        var ptraceback: UnsafeMutablePointer<PyObject>? = nil
-        PyErr_Fetch(&ptype, &pvalue, &ptraceback)
-        guard let sys = System else {
-            return "Unknown"
-        }
-        let p = UnsafeMutablePointer<Int32>.allocate(capacity: 2)
-        defer {
-            p.deallocate(capacity: 2)
-        }
-        guard 0 == pipe(p) else { return "Error Piping Failure" }
-        let fw = p.advanced(by: 1).pointee
-        let fr = p.pointee
-        guard let fwriter = fdopen(fw, "w"),
-            let writer = PyFile_FromFd(
-                fileno(fwriter),
-                UnsafeMutablePointer<Int8>(mutating: "stderr"),
-                UnsafeMutablePointer<Int8>(mutating: "w"),
-                -1,
-                nil,
-                nil,
-                nil,
-                1)
-            else {
-                close(fw)
-                close(fr)
-                return "Pipe Pythonization Failure"
-        }
-        defer {
-            Py_DecRef(writer)
-        }
-        let stdErrKey = UnsafeMutablePointer<CChar>(mutating: "stderr")
-        guard -1 != PyMapping_SetItemString(sys._sys, stdErrKey, writer) else {
-            return "Redirecting StdErr Failure"
-        }
-        PyErr_Restore(ptype, pvalue, ptraceback)
-        PyErr_Print()
-        fclose(fwriter)
-        var bufferArray:[CChar] = []
-        let bufsize = 4096
-        let buffer = UnsafeMutablePointer<CChar>.allocate(capacity: bufsize)
-        defer {
-            buffer.deallocate(capacity: bufsize)
-        }
-        var count = 0
-        repeat {
-            memset(buffer, 0, bufsize)
-            count = read(fr, buffer, bufsize)
-            if count > 0 {
-                let array = UnsafeBufferPointer<CChar>(start: buffer, count: count)
-                bufferArray.append(contentsOf: array)
-            }
-        } while (count > 0)
-        close(fr)
-        bufferArray.append(0)
-        return String(cString: bufferArray)
+        PyErr_PrintEx(1)
+
+        let type = (try? System._sys["last_type"]?.load(String.self, "__name__")).flatMap { $0 } ?? "<no type>"
+        let value = System._sys["last_value"]?.description ?? "<no value>"
+        let traceback = System._sys["last_traceback"]?.description ?? "<no traceback>"
+
+        return type + ": " + value + "\n"
+            + traceback
     }
 
-    static func `get`(_ dic: UnsafeMutablePointer<PyObject>, name: String) -> String? {
-        if let obj = PyMapping_GetItemString(
-            dic, UnsafeMutablePointer<Int8>(mutating: name)),
-            let str = PyUnicode_AsUTF8(obj),
-            let res = String(validatingUTF8: str) {
-            Py_DecRef(obj)
-            return res
-        } else {
-            return nil
-        }
-    }
+    public init() {
+        Py_Initialize()
+        let sys = try! PyObj(import: "sys").moduleDictionary
+        let version = try! String(python: sys["version"]!)
 
-    public init?() {
-        guard let module = PyImport_ImportModule("sys"),
-            let sys = PyModule_GetDict(module),
-            let ver = Python.get(sys, name: "version")
-            else {
-                return nil
-        }
-        _module = module
+        //print(try! PythonBridgableArray<String>(python: try! PyObj(systemPath: "path")).array)
+
+        let decimal = try! PyObj(import: "decimal").load("Decimal")!
+        let deepcopy = try! PyObj(import: "copy")
+
         _sys = sys
-        _version = ver
-    }
-    deinit {
-        Py_DecRef(_sys)
-        Py_DecRef(_module)
+        _version = version
+        _decimal = decimal
+        _deepCopy = deepcopy
     }
 }
+
+
+public struct SystemError: Error, CustomStringConvertible, CustomDebugStringConvertible {
+    let file: String
+    let line: UInt
+    let function: String
+    let message: String
+
+    public init(message: String = "", file: String = #file, line: UInt = #line, function: String = #function) {
+        self.file = file
+        self.line = line
+        self.function = function
+        self.message = message
+    }
+}
+
+extension SystemError {
+    public var description: String {
+        return "'\(self.message)' [\(file):\(line)] @ \(function)"
+    }
+
+    public var debugDescription: String {
+        return description
+    }
+}
+
+extension Optional {
+    public func unwrapOrThrow(message: String = "", file: String = #file, line: UInt = #line, function: String = #function) throws -> Wrapped {
+        guard let value = self else {
+            throw SystemError(message: message, file: file, line: line, function: function)
+        }
+        return value
+    }
+}
+

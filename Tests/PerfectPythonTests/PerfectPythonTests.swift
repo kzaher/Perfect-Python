@@ -20,12 +20,6 @@ import XCTest
 @testable import Python3
 @testable import PerfectPython
 
-extension String {
-    var test_wchars: [wchar_t] {
-        return self.flatMap { $0.unicodeScalars }.map { Int32($0.value) } + [0]
-    }
-}
-
 class PerfectPythonTests: XCTestCase {
 
     static var allTests = [
@@ -74,12 +68,15 @@ class PerfectPythonTests: XCTestCase {
     }
 
     func testLastError() {
-        do {
-            let _ = try PyObj(path: "/nowhere", import: "inexisting")
-        } catch PyObj.Exception.Throw(let msg) {
-            print("Trapped an expected error:", msg)
-        } catch {
-            XCTFail(error.localizedDescription)
+        for _ in 0 ..< 10 {
+                do {
+                    let _ = try PyObj(path: "/nowhere", import: "inexisting")
+                    XCTFail()
+                } catch PyObj.Exception.Throw(let msg) {
+                    XCTAssertEqual(msg, "ModuleNotFoundError: No module named 'inexisting'\nNone")
+                } catch {
+                    XCTFail(error.localizedDescription)
+                }
         }
     }
 
@@ -95,16 +92,16 @@ class PerfectPythonTests: XCTestCase {
         do {
             let pymod = try PyObj(path: "/tmp", import: "clstest")
             for _ in 0 ..< 10 {
-                    if let personClass = try pymod.load("Person"),
-                        let person = try personClass.construct("rocky", 24),
-                        let name = try person.load(String.self, "name"),
-                        let age = try person.load(Int.self, "age") {
-                        print("loaded with: ", name, age)
-                        let intro = try person.call(String.self, "intro") ?? "missing"
-                        XCTAssertEqual(name, "rocky")
-                        XCTAssertEqual(age, 24)
-                        XCTAssertNotEqual(intro, "missing")
-                    }
+                if let personClass = try pymod.load("Person"),
+                    let person = try personClass.construct("rocky", 24),
+                    let name = try person.load(String.self, "name"),
+                    let age = try person.load(Int.self, "age") {
+                    print("loaded with: ", name, age)
+                    let intro = try person.call(String.self, "intro") ?? "missing"
+                    XCTAssertEqual(name, "rocky")
+                    XCTAssertEqual(age, 24)
+                    XCTAssertNotEqual(intro, "missing")
+                }
             }
         }catch {
             XCTFail("\(error)")
@@ -112,34 +109,35 @@ class PerfectPythonTests: XCTestCase {
     }
 
     func testClass() {
-        PySys_SetPath("/tmp".wchars)
-        let module = PyImport_ImportModule("clstest")!
+        Python.inWorkingDirectory(path: "/tmp") {
+            let module = PyImport_ImportModule("clstest")!
 
             for _ in 0 ..< 100 {
-        if
-            let personClass = PyObject_GetAttrString(module, "Person"),
-            let args = PyTuple_New(2),
-            let name = PyUnicode_FromString("Rocky"),
-            let age = PyLong_FromLong(24),
-            PyTuple_SetItem(args, 0, name) == 0,
-            PyTuple_SetItem(args, 1, age) == 0,
-            let personObj = PyObject_CallObject(personClass, args),
-            let introFunc = PyObject_GetAttrString(personObj, "intro"),
-            let introRes = PyObject_CallObject(introFunc, nil),
-            let intro = PyUnicode_AsUTF8(introRes)
-        {
-            print(String(cString: intro))
-            Py_DecRef(introFunc)
-            Py_DecRef(introRes)
-            Py_DecRef(args)
-            //Py_DecRef(name)
-            //Py_DecRef(age)
-            Py_DecRef(personObj)
-        } else {
-            XCTFail("class variable failed")
-        }
-        }
+                if
+                    let personClass = PyObject_GetAttrString(module, "Person"),
+                    let args = PyTuple_New(2),
+                    let name = PyUnicode_FromString("Rocky"),
+                    let age = PyLong_FromLong(24),
+                    PyTuple_SetItem(args, 0, name) == 0,
+                    PyTuple_SetItem(args, 1, age) == 0,
+                    let personObj = PyObject_CallObject(personClass, args),
+                    let introFunc = PyObject_GetAttrString(personObj, "intro"),
+                    let introRes = PyObject_CallObject(introFunc, nil),
+                    let intro = PyUnicode_AsUTF8(introRes)
+                {
+                    print(String(cString: intro))
+                    Py_DecRef(introFunc)
+                    Py_DecRef(introRes)
+                    Py_DecRef(args)
+                    //Py_DecRef(name)
+                    //Py_DecRef(age)
+                    Py_DecRef(personObj)
+                } else {
+                    XCTFail("class variable failed")
+                }
+            }
             Py_DecRef(module)
+        }
     }
 
     func testBasic2() {
@@ -186,33 +184,71 @@ class PerfectPythonTests: XCTestCase {
     }
 
     func testBasic() {
-        PySys_SetPath("/tmp".test_wchars)
-        if let module = PyImport_ImportModule("helloworld"),
-            let function = PyObject_GetAttrString(module, "mydouble"),
-            let num = PyLong_FromLong(2),
-            let args = PyTuple_New(1),
-            PyTuple_SetItem(args, 0, num) == 0,
-            let res = PyObject_CallObject(function, args) {
-            let four = PyLong_AsLong(res)
-            XCTAssertEqual(four, 4)
-            if let strObj = PyObject_GetAttrString(module, "stringVar"),
-                let pstr = PyUnicode_AsUTF8(strObj) {
-                let strvar = String(cString: pstr)
-                print(strvar)
-                Py_DecRef(function)
-                Py_DecRef(args)
-                Py_DecRef(num)
-                Py_DecRef(res)
-                Py_DecRef(strObj)
-            } else {
-                XCTFail("string variable failed")
-            }
-            if let listObj = PyObject_GetAttrString(module, "listVar") {
-                XCTAssertEqual(String(cString: listObj.pointee.ob_type.pointee.tp_name), "list")
-                let size = PyList_Size(listObj)
-                XCTAssertEqual(size, 5)
-                for i in 0 ..< size {
-                    if let item = PyList_GetItem(listObj, i) {
+        Python.inWorkingDirectory(path: "/tmp") {
+            if let module = PyImport_ImportModule("helloworld"),
+                let function = PyObject_GetAttrString(module, "mydouble"),
+                let num = PyLong_FromLong(2),
+                let args = PyTuple_New(1),
+                PyTuple_SetItem(args, 0, num) == 0,
+                let res = PyObject_CallObject(function, args) {
+                let four = PyLong_AsLong(res)
+                XCTAssertEqual(four, 4)
+                if let strObj = PyObject_GetAttrString(module, "stringVar"),
+                    let pstr = PyUnicode_AsUTF8(strObj) {
+                    let strvar = String(cString: pstr)
+                    print(strvar)
+                    Py_DecRef(function)
+                    Py_DecRef(args)
+                    Py_DecRef(num)
+                    Py_DecRef(res)
+                    Py_DecRef(strObj)
+                } else {
+                    XCTFail("string variable failed")
+                }
+                if let listObj = PyObject_GetAttrString(module, "listVar") {
+                    XCTAssertEqual(String(cString: listObj.pointee.ob_type.pointee.tp_name), "list")
+                    let size = PyList_Size(listObj)
+                    XCTAssertEqual(size, 5)
+                    for i in 0 ..< size {
+                        if let item = PyList_GetItem(listObj, i) {
+                            let j = item.pointee
+                            let tpName = String(cString: j.ob_type.pointee.tp_name)
+                            let v: Any?
+                            switch tpName {
+                            case "str":
+                                v = String(cString: PyUnicode_AsUTF8(item))
+                                break
+                            case "int":
+                                v = PyLong_AsLong(item)
+                            case "float":
+                                v = PyFloat_AsDouble(item)
+                            default:
+                                v = nil
+                            }
+                            if let v = v {
+                                print(i, tpName, v)
+                            } else {
+                                print(i, tpName, "Unknown")
+                            }
+                            Py_DecRef(item)
+                        }
+                    }
+                    Py_DecRef(listObj)
+                } else {
+                    XCTFail("list variable failed")
+                }
+
+                if let dicObj = PyObject_GetAttrString(module, "dictVar"),
+                    let keys = PyDict_Keys(dicObj) {
+                    XCTAssertEqual(String(cString: dicObj.pointee.ob_type.pointee.tp_name), "dict")
+                    let size = PyDict_Size(dicObj)
+                    XCTAssertEqual(size, 3)
+                    for i in 0 ..< size {
+                        guard let key = PyList_GetItem(keys, i),
+                            let item = PyDict_GetItem(dicObj, key) else {
+                                continue
+                        }
+                        let keyName = String(cString: PyUnicode_AsUTF8(key))
                         let j = item.pointee
                         let tpName = String(cString: j.ob_type.pointee.tp_name)
                         let v: Any?
@@ -228,58 +264,21 @@ class PerfectPythonTests: XCTestCase {
                             v = nil
                         }
                         if let v = v {
-                            print(i, tpName, v)
+                            print(keyName, tpName, v)
                         } else {
-                            print(i, tpName, "Unknown")
+                            print(keyName, tpName, "Unknown")
                         }
                         Py_DecRef(item)
                     }
+                    Py_DecRef(keys)
+                    Py_DecRef(dicObj)
+                } else {
+                    XCTFail("dictionary variable failed")
                 }
-                Py_DecRef(listObj)
+                Py_DecRef(module)
             } else {
-                XCTFail("list variable failed")
+                XCTFail("library import failed")
             }
-
-            if let dicObj = PyObject_GetAttrString(module, "dictVar"),
-                let keys = PyDict_Keys(dicObj) {
-                XCTAssertEqual(String(cString: dicObj.pointee.ob_type.pointee.tp_name), "dict")
-                let size = PyDict_Size(dicObj)
-                XCTAssertEqual(size, 3)
-                for i in 0 ..< size {
-                    guard let key = PyList_GetItem(keys, i),
-                        let item = PyDict_GetItem(dicObj, key) else {
-                            continue
-                    }
-                    let keyName = String(cString: PyUnicode_AsUTF8(key))
-                    let j = item.pointee
-                    let tpName = String(cString: j.ob_type.pointee.tp_name)
-                    let v: Any?
-                    switch tpName {
-                    case "str":
-                        v = String(cString: PyUnicode_AsUTF8(item))
-                        break
-                    case "int":
-                        v = PyLong_AsLong(item)
-                    case "float":
-                        v = PyFloat_AsDouble(item)
-                    default:
-                        v = nil
-                    }
-                    if let v = v {
-                        print(keyName, tpName, v)
-                    } else {
-                        print(keyName, tpName, "Unknown")
-                    }
-                    Py_DecRef(item)
-                }
-                Py_DecRef(keys)
-                Py_DecRef(dicObj)
-            } else {
-                XCTFail("dictionary variable failed")
-            }
-            Py_DecRef(module)
-        } else {
-            XCTFail("library import failed")
         }
     }
 
@@ -299,8 +298,28 @@ class PerfectPythonTests: XCTestCase {
             } else {
                 XCTFail("callback not found")
             }
-        }catch {
+        } catch {
             XCTFail(error.localizedDescription)
+        }
+    }
+
+    func testDecimal() {
+        for _ in 0 ..< 10 {
+                //let program = "from decimal import Decimal\n\ndef a(input):\n\treturn input + Decimal(1.0)\n"
+                let program = "from decimal import Decimal\n\ndef a(input):\n\treturn input + Decimal(1.0)\n"
+                let path = "/tmp/decimaltest.py"
+                writeScript(path: path, content: program)
+                do {
+                    let pymod = try PyObj(path: "/tmp", import: "decimaltest")
+                    if let result = try pymod.call(Decimal.self, "a", Decimal(2.0)) {
+                        XCTAssertEqual(result, Decimal(3.0))
+                        //print("callback result:", result)
+                    } else {
+                        XCTFail("callback failure")
+                    }
+                } catch {
+                    XCTFail(error.localizedDescription)
+                }
         }
     }
 }
